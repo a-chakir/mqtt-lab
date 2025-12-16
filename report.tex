@@ -1,0 +1,321 @@
+\documentclass[11pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+% Page geometry
+\geometry{margin=2.5cm}
+
+% Code listing style
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    frame=single
+}
+\lstset{style=mystyle}
+
+% Header and footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{MQTT Multi-Agent Systems Lab}
+\lhead{CS534}
+\rfoot{Page \thepage}
+
+% Title
+\title{
+    \vspace{-1cm}
+    \textbf{MQTT Multi-Agent Systems Lab Report} \\
+    \large CS534 - Multi-Agent Systems \\
+    ESISAR 5A IR\&C
+}
+\author{[Student Name]}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents the implementation of a multi-agent system using MQTT (Message Queuing Telemetry Transport) as the communication protocol. The project covers three main parts: basic MQTT publish/subscribe patterns, a dynamic sensor network simulation, and the Contract Net protocol for job scheduling. All implementations use Python with the Paho-MQTT library, demonstrating how lightweight messaging can enable coordination between distributed agents.
+\end{abstract}
+
+%----------------------------------------------------------------------
+\section{Introduction}
+
+MQTT is a lightweight publish-subscribe messaging protocol designed for resource-constrained devices and low-bandwidth networks. In this lab, we explore how MQTT can serve as the backbone for multi-agent systems, where autonomous agents communicate and coordinate through message exchange.
+
+The lab is divided into three parts:
+\begin{enumerate}
+    \item \textbf{MQTT Basics}: Understanding publish/subscribe patterns through a simple client and a ping-pong game.
+    \item \textbf{Sensor Network}: Building a dynamic network of sensor agents, averaging agents, and an interface agent.
+    \item \textbf{Contract Net Protocol}: Implementing a coordination mechanism for job scheduling across multiple machines.
+\end{enumerate}
+
+\subsection{Technology Choices}
+
+We chose \textbf{Python} as the programming language for several reasons:
+\begin{itemize}
+    \item The \texttt{paho-mqtt} library provides a mature and well-documented MQTT client.
+    \item Python's threading support makes it easy to handle asynchronous message callbacks.
+    \item Quick prototyping allows us to focus on the multi-agent concepts rather than low-level details.
+\end{itemize}
+
+All agents run as separate processes, spawned by a master script. This approach simulates a realistic distributed system where each agent operates independently.
+
+%----------------------------------------------------------------------
+\section{Part I: MQTT Basics}
+
+\subsection{First Client}
+
+The first exercise establishes a basic MQTT workflow. Our client connects to a local broker, subscribes to a topic called \texttt{hello}, and publishes messages with delays between them.
+
+\begin{lstlisting}[language=Python, caption=Key connection and subscription code]
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+client.on_connect = on_connect
+client.on_message = on_message
+client.connect('localhost', 1883, 60)
+client.subscribe('hello')
+\end{lstlisting}
+
+The client successfully receives its own published messages, confirming that the publish-subscribe loop works correctly. This simple test validates our development environment.
+
+\subsection{Ping-Pong Game}
+
+For the ping-pong exercise, we implemented a single configurable client that can play as either ``ping'' or ``pong'' based on a command-line argument.
+
+\subsubsection{Topic Design Decision}
+
+We chose to use \textbf{two separate topics}: \texttt{game/ping} and \texttt{game/pong}. This design is cleaner than a single topic because:
+\begin{itemize}
+    \item Each player only subscribes to the opponent's channel.
+    \item No need to filter out self-sent messages.
+    \item Clear separation of concerns.
+\end{itemize}
+
+With a single topic, the client would need to ignore messages it sent itself, adding unnecessary complexity.
+
+\subsubsection{Automated Startup}
+
+A master script (\texttt{start\_game.py}) spawns both players as subprocesses and displays their interleaved output. This approach scales well for simulations with many agents.
+
+\begin{lstlisting}[caption=Execution trace of the ping-pong game]
+[GAME] Starting Ping-Pong Game...
+[PONG] Connected to broker!
+[PING] Sent: PING
+[PONG] Received: PING
+[PONG] Sent: PONG
+[PING] Received: PONG
+[PING] Sent: PING
+...
+[PONG] Game finished after 10 rounds!
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Part II: Sensor Network}
+
+This section simulates a smart home sensor network with dynamic behavior.
+
+\subsection{Architecture}
+
+The system consists of three types of agents:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Agent Type} & \textbf{Role} & \textbf{Topic Pattern} \\
+\midrule
+Sensor & Publish readings & \texttt{<zone>/<type>/<id>} \\
+Averaging & Compute statistics & Subscribe to \texttt{<zone>/<type>/+} \\
+Interface & Display dashboard & Subscribe to \texttt{averages/\#} \\
+\bottomrule
+\end{tabular}
+\caption{Agent types and their topic patterns}
+\end{table}
+
+\subsection{Topic Structure}
+
+We designed a hierarchical topic structure that mirrors the physical organization:
+
+\begin{verbatim}
+living_room/temperature/sensor_001
+living_room/humidity/sensor_002
+averages/living_room/temperature
+\end{verbatim}
+
+This structure allows averaging agents to subscribe to all sensors of a specific type in a zone using wildcards (e.g., \texttt{living\_room/temperature/+}).
+
+\subsection{Sensor Implementation}
+
+Each sensor generates readings following a sinusoidal pattern to simulate realistic variations:
+
+\begin{lstlisting}[language=Python, caption=Sinusoidal reading generation]
+def generate_reading(self):
+    elapsed = time.time() - self.start_time
+    value = self.base_value + self.amplitude * math.sin(elapsed * 0.1)
+    value += random.uniform(-0.5, 0.5)  # Add noise
+    return round(value, 2)
+\end{lstlisting}
+
+\subsection{Dynamic Behavior}
+
+The master process demonstrates dynamic system behavior by:
+\begin{itemize}
+    \item Spawning new sensors at random intervals.
+    \item Removing sensors randomly (keeping a minimum count).
+    \item Adding averaging agents when new zone/type combinations appear.
+\end{itemize}
+
+\subsection{Anomaly Detection}
+
+We extended the sensor network with anomaly detection capabilities:
+
+\begin{enumerate}
+    \item \textbf{Detection Agent}: Monitors all sensor readings and computes rolling statistics. When a reading exceeds 2 standard deviations from the mean, an alert is published.
+    
+    \item \textbf{Identification Agent}: Counts alerts per sensor. After 3 alerts, it sends a reset command to the faulty sensor.
+    
+    \item \textbf{Sensor Reset}: Sensors subscribe to \texttt{control/reset/<id>} and reset their state when commanded.
+\end{enumerate}
+
+The faulty sensor simulation uses a 30\% chance to send an anomalous reading:
+
+\begin{lstlisting}[language=Python, caption=Faulty reading injection]
+if self.faulty and random.random() < 0.3:
+    value += random.choice([-1, 1]) * self.amplitude * 4
+\end{lstlisting}
+
+%----------------------------------------------------------------------
+\section{Part III: Contract Net Protocol}
+
+The Contract Net protocol is a coordination mechanism where a supervisor allocates tasks to worker agents through a bidding process.
+
+\subsection{Protocol Implementation}
+
+Our implementation follows the standard Contract Net flow:
+
+\begin{enumerate}
+    \item \textbf{Call for Proposal (CfP)}: The supervisor broadcasts a job request on \texttt{cfp/jobs}.
+    \item \textbf{Bidding}: Machines respond on \texttt{bids/<job\_id>} with either a proposal (including completion time) or a rejection.
+    \item \textbf{Deadline}: The supervisor waits for a configurable deadline (3 seconds in our tests).
+    \item \textbf{Evaluation}: The supervisor selects the machine with the lowest completion time.
+    \item \textbf{Award}: The winner receives the job on \texttt{awards/<machine\_id>}.
+    \item \textbf{Execution}: The machine becomes busy and cannot bid until the job completes.
+\end{enumerate}
+
+\subsection{Design Decisions}
+
+\subsubsection{Machine ID Retrieval}
+Machine IDs are included in the bid message payload rather than extracted from topics. This makes the supervisor's logic simpler and more robust:
+
+\begin{lstlisting}[language=Python]
+bid = {
+    'type': 'proposal',
+    'machine_id': self.machine_id,
+    'time': bid_time,
+    ...
+}
+\end{lstlisting}
+
+\subsubsection{Targeted Awards}
+Awards are sent to machine-specific topics (\texttt{awards/<machine\_id>}) rather than broadcast. This ensures only the winner receives the assignment and reduces unnecessary message processing.
+
+\subsection{Execution Results}
+
+A typical simulation with 4 machines and 10 jobs shows the protocol working correctly:
+
+\begin{lstlisting}[caption=Contract Net execution trace (excerpt)]
+[CFP] CfP sent for job 15412d4e (painting)
+[WAIT] Waiting 3s for bids...
+[BID] Received bid from machine_D: 2.8s
+[REJECT] Rejection from machine_A
+[BID] Received bid from machine_C: 4.03s
+[WINNER] Selected machine_D (time: 2.8s)
+[AWARD] Job 15412d4e awarded to machine_D
+...
+FINAL STATISTICS
+Jobs Completed: 9
+Jobs Failed:    1
+\end{lstlisting}
+
+The one failed job (packaging) occurred because no machine had the required capability, demonstrating that the protocol correctly handles edge cases.
+
+%----------------------------------------------------------------------
+\section{Difficulties and Solutions}
+
+\subsection{Windows Console Encoding}
+
+\textbf{Problem}: Windows PowerShell uses CP1252 encoding, which doesn't support Unicode emojis. Our initial implementation crashed with \texttt{UnicodeEncodeError}.
+
+\textbf{Solution}: We replaced all emoji characters with ASCII-safe text markers like \texttt{[SENSOR]}, \texttt{[ALERT]}, \texttt{[CFP]}, etc. This maintains readability while ensuring cross-platform compatibility.
+
+\subsection{Process Management}
+
+\textbf{Problem}: Spawned subprocesses didn't always terminate cleanly on Ctrl+C.
+
+\textbf{Solution}: We implemented proper signal handling with \texttt{signal.SIGINT} and added cleanup code that terminates all child processes before exiting.
+
+\subsection{Message Timing}
+
+\textbf{Problem}: In the ping-pong game, if ping started before pong was ready, messages were lost.
+
+\textbf{Solution}: Pong is started first, with a small delay before ping begins. Additionally, ping waits 0.5 seconds after connecting before sending its first message.
+
+%----------------------------------------------------------------------
+\section{Conclusion}
+
+This lab demonstrated how MQTT can effectively enable communication in multi-agent systems. The publish-subscribe pattern provides a flexible and decoupled architecture where agents can join or leave the system dynamically.
+
+Key takeaways:
+\begin{itemize}
+    \item \textbf{Topic design} is crucial for scalability and clarity.
+    \item \textbf{JSON payloads} make messages self-describing and easy to debug.
+    \item \textbf{Process isolation} (each agent as a separate process) provides realistic distribution simulation.
+    \item The \textbf{Contract Net protocol} effectively coordinates task allocation in a distributed system.
+\end{itemize}
+
+The complete source code is available in the Git repository, organized by exercise with README files documenting each component.
+
+%----------------------------------------------------------------------
+\section*{Repository Structure}
+
+\begin{verbatim}
+mqtt/
+├── I_FirstClient/      # Basic publish/subscribe
+├── I_PingPong/         # Ping-pong game
+├── SensorNetwork/      # Dynamic sensor network
+├── AnomalyDetection/   # Anomaly detection extension
+└── ContractNet/        # Contract Net protocol
+\end{verbatim}
+
+\end{document}
