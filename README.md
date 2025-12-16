@@ -109,5 +109,5 @@ python run_simulation.py --machines 4 --jobs 10
 - Each message includes timestamp and sender ID
 
 ## Author
-[Your Name]
-[Your Email]
+CHAKIR Abderrahmane
+abderrahmane.chakir@etu.esisar.grenoble-inp.fr
